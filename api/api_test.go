@@ -217,6 +217,27 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestIndex(t *testing.T) {
+	h := newHandler()
+	rec := do(t, h, http.MethodGet, "/", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusOK)
+	}
+	var body struct {
+		Service string `json:"service"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Service != "streaming-availability-service" {
+		t.Errorf("service field: got %q", body.Service)
+	}
+	if rec := do(t, h, http.MethodGet, "/unknown", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown path: got %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestMethodNotAllowed(t *testing.T) {
 	tests := []struct {
 		method string
@@ -224,6 +245,7 @@ func TestMethodNotAllowed(t *testing.T) {
 	}{
 		{http.MethodGet, "/ingest"},
 		{http.MethodPost, "/health"},
+		{http.MethodPost, "/"},
 		{http.MethodDelete, "/manifest/show/a"},
 	}
 

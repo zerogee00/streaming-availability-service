@@ -21,6 +21,7 @@ func New(s *store.Store, logger *slog.Logger) *AssetAPI {
 
 func (a *AssetAPI) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", a.Index)
 	mux.HandleFunc("POST /ingest", a.Ingest)
 	mux.HandleFunc("GET /manifest/{asset_id...}", a.Manifest)
 	mux.HandleFunc("GET /health", a.Health)

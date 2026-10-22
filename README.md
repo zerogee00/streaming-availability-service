@@ -112,6 +112,9 @@ limit). The specific cause is logged at `WARN` rather than returned.
 which captures the rest of the path. `/manifest/` with an empty ID returns
 `404 asset not found`. Ingest rejects empty path components and `.` or `..` components, since the mux redirects those paths before the manifest handler runs. Other characters must be URL-escaped by clients.
 - **Wrong methods return** `405` with an `Allow` header, from the mux itself.
+- `GET /` **returns a small JSON index** so the bare deployed URL shows the
+service is up. The route is `GET /{$}`, which matches only `/`, because a
+catch-all `/` would turn wrong-method `405`s into `404`s.
 
 ## Known limitations
 
@@ -120,6 +123,8 @@ URL, and unknown fields are accepted. Trailing data after the JSON object is rej
 - **Bodies are capped at 1 MB** and an oversized body returns `400` with the
 standard decode message, not `413`.
 - `Content-Type` **is not enforced** on ingest.
+- **Unknown paths return the mux's plain-text** `404 page not found`, not a
+JSON error body.
 - **No eviction.** Assets are never removed, so memory grows with the number
 of assets and segments ingested.
 - **Health is liveness only.** `/health` reports `ok` while the process
