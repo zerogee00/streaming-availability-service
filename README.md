@@ -73,8 +73,8 @@ segment is placed once instead of the whole list being sorted on every poll.
 `Get` returns a copy taken under the read lock, so the handler can encode the
 response after the lock is released without racing a concurrent write. The
 alternative I considered was a fixed number of shards, each a map plus a
-mutex, keyed by a hash of `asset_id`; it bounds lock count and memory, but the  
-shard count needs tuning and unrelated assets in the same shard block each  
+mutex, keyed by a hash of `asset_id`; it bounds lock count and memory, but the
+shard count needs tuning and unrelated assets in the same shard block each
 other.
 
 ## Assumptions and behaviour
@@ -82,7 +82,7 @@ other.
 - **State is in memory only** and is lost on restart, as the brief allows.
 Running more than one instance would give each its own inconsistent view.
 Every deploy and restart starts empty, and Render's free tier spins a
-  service down after 15 minutes without traffic, which also resets state.
+service down after 15 minutes without traffic, which also resets state.
 - **All four fields are required.** The brief shows only `cdn_url` missing,
 so I read "missing required fields" as all of them. An explicit `null`
 counts as missing.
@@ -100,8 +100,8 @@ clock, not this service's.
 - **Ingest returns** `202 Accepted` as the brief specifies. Strictly, `202`
 means the request was received but processing is not complete (RFC 9110),
 whereas here the write is synchronous and visible to the very next manifest
-  read. I kept `202` because it is the specified API contract, and because it
-  leaves room to make ingest asynchronous later (for example,
+read. I kept `202` because it is the specified API contract, and because it
+leaves room to make ingest asynchronous later (for example,
 queueing writes under burst load) without changing what clients see. If the
 contract were mine to set, I would return `201 Created` for a new segment
 and `200 OK` for a duplicate, so the transcoder can tell the two apart.
@@ -179,28 +179,29 @@ reads were `404`, because readers poll assets that have not been created yet.
 **Observed bottleneck in the original local run.** The following profile observations include both the client and server in one process and are not an isolated server capacity measurement:
 
 - **About 70% of CPU is socket reads and writes** in the HTTP stack, for the
-  client and server combined. Per-request HTTP overhead is the limit.
+client and server combined. Per-request HTTP overhead is the limit.
 - **About 8% is the manifest handler**, nearly all of it JSON encoding of the
-  segment list.
+segment list.
 - **The store and the ingest handler each take under 0.5% of CPU**, and GC
-  about 1%.
+about 1%.
 - **The mutex profile shows no contention on the store's locks.** The
-  contended locks are inside `net/http`'s connection handling.
+contended locks are inside `net/http`'s connection handling.
 
-These observations suggest HTTP processing dominated this particular workload; they do not establish which resource an independently hosted server exhausts first. That shows up as rising latency rather
-than errors, and sooner on a small host: Render's free tier gets 0.1 CPU and
+So the CPU goes to HTTP handling and JSON encoding rather than the store's
+locks, and I expect CPU to be what runs out first. That shows up as rising
+latency rather than errors, and sooner on a small host: Render's free tier gets 0.1 CPU and
 512 MB RAM, so expect a small fraction of these numbers there.
 
 The costs that grow from here:
 
 - **Manifest size.** Each poll copies and encodes the whole segment list, so
-  the read cost grows with segments per asset. At 400 segments it is minor,
-  but a long-form asset with thousands of segments polled by many CDN nodes
-  turns encoding into the hot path.
+the read cost grows with segments per asset. At 400 segments it is minor,
+but a long-form asset with thousands of segments polled by many CDN nodes
+turns encoding into the hot path.
 - **Memory.** Nothing is evicted, so memory grows with every asset ingested.
 - **Overload behaviour.** The server has no concurrency limit, so past
-  capacity, goroutines pile up and latency climbs instead of excess requests
-  being rejected quickly.
+capacity, goroutines pile up and latency climbs instead of excess requests
+being rejected quickly.
 
 Writes to one asset are serialised by design, and an out-of-order insert
 shifts the slice (O(n)). The duplicate-update benchmark measures two indexes per asset across 500 assets; its roughly 100 ns result does not represent growing manifests. `BenchmarkPutOutOfOrder` separately measures middle insertion into 100-, 1000-, and 10000-segment manifests with setup excluded. `Get` copies 1000 segments in roughly 3 us locally. These microbenchmarks are workload-specific.
@@ -208,17 +209,17 @@ shifts the slice (O(n)). The duplicate-update benchmark measures two indexes per
 **What I would change.**
 
 - Add a content-based or mutation-version `ETag` so CDN pollers get `304 Not Modified`
-  and skip the body. This cuts the bytes written per poll, which is where
-  the time goes. The current maximum event timestamp is unsuitable as a change validator: an older event can change a URL without advancing it.
+and skip the body. This cuts the bytes written per poll, which is where
+the time goes. The current maximum event timestamp is unsuitable as a change validator: an older event can change a URL without advancing it.
 - Cache the encoded manifest bytes per asset, rebuilt on write, so a poll is
-  a byte copy instead of a fresh JSON encode.
+a byte copy instead of a fresh JSON encode.
 - Add a concurrency limit or load shedding (`503` with `Retry-After`) so
-  overload fails fast.
+overload fails fast.
 - Scale horizontally by partitioning on `asset_id`, or move state to a shared
-  store, since in-memory state does not survive more than one instance.
+store, since in-memory state does not survive more than one instance.
 - Minor: call `Load` before `LoadOrStore` in `Put`. `LoadOrStore` allocates a
-  new `asset` on every call even when one exists, which is one of the two
-  allocations per `Put`.
+new `asset` on every call even when one exists, which is one of the two
+allocations per `Put`.
 
 **Observability before production.**
 
@@ -237,8 +238,9 @@ None outside the Go standard library.
 
 ## Deployment
 
-Deployed on Render as a Web Service: build `go build -o sas .`, start `./sas`,
-health check path `/health`. Render sets `PORT` (default `10000`), so the
-local `8080` default never applies there.
+Deployed on Render as a Web Service: build
+`go build -tags netgo -ldflags '-s -w' -o app`, start `./app`, health check
+path `/health`. Render sets `PORT` (default `10000`), so the local `8080`
+default never applies there.
 
-Deployed URL: TODO
+Deployed URL: [https://streaming-availability-service.onrender.com](https://streaming-availability-service.onrender.com)
