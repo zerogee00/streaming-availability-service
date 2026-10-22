@@ -37,6 +37,9 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("parse DRAIN_TIMEOUT %q: %w", v, err)
 		}
+		if d <= 0 {
+			return fmt.Errorf("DRAIN_TIMEOUT must be greater than zero")
+		}
 		drainTimeout = d
 	}
 

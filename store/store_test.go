@@ -71,7 +71,7 @@ func TestGet(t *testing.T) {
 	})
 }
 
-func BenchmarkPutParallel(b *testing.B) {
+func BenchmarkPutDuplicateParallel(b *testing.B) {
 	s := store.New()
 	ids := make([]string, 500)
 	for i := range ids {

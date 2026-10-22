@@ -14,7 +14,7 @@ go run .
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8080` | Listen port. Render sets this automatically. |
-| `DRAIN_TIMEOUT` | `20s` | How long shutdown waits for in-flight requests. Any `time.ParseDuration` value, e.g. `5s`, `1m`. An invalid value stops startup with an error. |
+| `DRAIN_TIMEOUT` | `20s` | How long shutdown waits for in-flight requests. Any `time.ParseDuration` value, e.g. `5s`, `1m`. Invalid or non-positive values stop startup with an error. |
 
 ```sh
 curl -X POST localhost:8080/ingest \
@@ -81,7 +81,8 @@ other.
 
 - **State is in memory only** and is lost on restart, as the brief allows.
 Running more than one instance would give each its own inconsistent view.
-Render's free tier also spins down idle services, which resets state.
+Every deploy and restart starts empty, and Render's free tier spins a
+  service down after 15 minutes without traffic, which also resets state.
 - **All four fields are required.** The brief shows only `cdn_url` missing,
 so I read "missing required fields" as all of them. An explicit `null`
 counts as missing.
@@ -109,15 +110,13 @@ and `200 OK` for a duplicate, so the transcoder can tell the two apart.
 limit). The specific cause is logged at `WARN` rather than returned.
 - **Asset IDs contain slashes**, so the route is `GET /manifest/{asset_id...}`,
 which captures the rest of the path. `/manifest/` with an empty ID returns
-`404 asset not found`. The standard mux redirects unclean paths such as
-`/manifest/show//a` before the handler runs.
+`404 asset not found`. Ingest rejects empty path components and `.` or `..` components, since the mux redirects those paths before the manifest handler runs. Other characters must be URL-escaped by clients.
 - **Wrong methods return** `405` with an `Allow` header, from the mux itself.
 
 ## Known limitations
 
 - **Light validation.** A negative `segment_index`, a `cdn_url` that is not a
-URL, unknown fields, and trailing data after the JSON object are all
-accepted.
+URL, and unknown fields are accepted. Trailing data after the JSON object is rejected.
 - **Bodies are capped at 1 MB** and an oversized body returns `400` with the
 standard decode message, not `413`.
 - `Content-Type` **is not enforced** on ingest.
@@ -141,8 +140,8 @@ the listener closes immediately, in-flight requests run to completion, and
 the process exits 0. If the deadline passes first, it exits 1. After the first
 signal the handler is released, so a second `SIGTERM` or Ctrl-C kills the
 process immediately. `DRAIN_TIMEOUT` should stay below the platform's grace
-period before it sends `SIGKILL`. The server's `WriteTimeout` (10s) already
-bounds how long any single request can run.
+period before it sends `SIGKILL`: Render's default is 30s (configurable up to
+300s), so the 20s default fits. The server's `WriteTimeout` (10s) limits response writing; it does not cancel handler execution. The shutdown deadline bounds how long the process waits for draining.
 
 Verified manually by starting a slow upload, sending `SIGTERM` mid-request,
 and confirming the request still returned `202` while new connections were
@@ -172,7 +171,7 @@ reads:  p50 8.8 ms, p99 14.8 ms
 No requests failed and no segments were lost or misordered. About a fifth of
 reads were `404`, because readers poll assets that have not been created yet.
 
-**Where it breaks first.** Not in the locks. The profiles show:
+**Observed bottleneck in the original local run.** The following profile observations include both the client and server in one process and are not an isolated server capacity measurement:
 
 - **About 70% of CPU is socket reads and writes** in the HTTP stack, for the
   client and server combined. Per-request HTTP overhead is the limit.
@@ -183,10 +182,9 @@ reads were `404`, because readers poll assets that have not been created yet.
 - **The mutex profile shows no contention on the store's locks.** The
   contended locks are inside `net/http`'s connection handling.
 
-So the per-asset locking holds at this scale, and a single instance runs out
-of CPU on request handling first. That shows up as rising latency rather
-than errors, and sooner on a small host: Render's free tier gets a fraction
-of one CPU.
+These observations suggest HTTP processing dominated this particular workload; they do not establish which resource an independently hosted server exhausts first. That shows up as rising latency rather
+than errors, and sooner on a small host: Render's free tier gets 0.1 CPU and
+512 MB RAM, so expect a small fraction of these numbers there.
 
 The costs that grow from here:
 
@@ -200,15 +198,13 @@ The costs that grow from here:
   being rejected quickly.
 
 Writes to one asset are serialised by design, and an out-of-order insert
-shifts the slice (O(n)). The store benchmarks (`make bench`) show about 100 ns
-per `Put` across 500 assets and about 3 us per `Get` of a 1000-segment
-manifest, so neither matters next to the HTTP cost.
+shifts the slice (O(n)). The duplicate-update benchmark measures two indexes per asset across 500 assets; its roughly 100 ns result does not represent growing manifests. `BenchmarkPutOutOfOrder` separately measures middle insertion into 100-, 1000-, and 10000-segment manifests with setup excluded. `Get` copies 1000 segments in roughly 3 us locally. These microbenchmarks are workload-specific.
 
 **What I would change.**
 
-- Add an `ETag` or `Last-Modified` so CDN pollers get `304 Not Modified`
+- Add a content-based or mutation-version `ETag` so CDN pollers get `304 Not Modified`
   and skip the body. This cuts the bytes written per poll, which is where
-  the time goes.
+  the time goes. The current maximum event timestamp is unsuitable as a change validator: an older event can change a URL without advancing it.
 - Cache the encoded manifest bytes per asset, rebuilt on write, so a poll is
   a byte copy instead of a fresh JSON encode.
 - Add a concurrency limit or load shedding (`503` with `Retry-After`) so
@@ -237,6 +233,7 @@ None outside the Go standard library.
 ## Deployment
 
 Deployed on Render as a Web Service: build `go build -o sas .`, start `./sas`,
-health check path `/health`. Render provides `PORT`.
+health check path `/health`. Render sets `PORT` (default `10000`), so the
+local `8080` default never applies there.
 
 Deployed URL: TODO

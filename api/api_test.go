@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -267,5 +268,49 @@ func TestConcurrentIngestAndManifest(t *testing.T) {
 		if got := indexes(m); !slices.Equal(got, want) {
 			t.Errorf("asset %d: got %v, want 0..%d", a, got, segments-1)
 		}
+	}
+}
+
+func TestIngestRejectsTrailingDataWithoutMutation(t *testing.T) {
+	for _, suffix := range []string{"]]]", " {}", " null", strings.Repeat(" ", 2<<20)} {
+		t.Run(fmt.Sprintf("suffix_%d_%q", len(suffix), suffix[:min(len(suffix), 8)]), func(t *testing.T) {
+			h := newHandler()
+			rec := do(t, h, http.MethodPost, "/ingest", segmentJSON("a", 0)+suffix)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status: got %d", rec.Code)
+			}
+			if rec = do(t, h, http.MethodGet, "/manifest/a", ""); rec.Code != http.StatusNotFound {
+				t.Fatalf("rejected request changed store: %d", rec.Code)
+			}
+		})
+	}
+}
+
+func TestAssetIDPathComponents(t *testing.T) {
+	for _, id := range []string{"show//a", "/show/a", "show/a/", "show/./a", "show/../a"} {
+		t.Run(id, func(t *testing.T) {
+			rec := do(t, newHandler(), http.MethodPost, "/ingest", segmentJSON(id, 0))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status: got %d", rec.Code)
+			}
+		})
+	}
+	for _, id := range []string{"show/a", "show/a b", "show/a?b", "show/a#b", "show/a%2Fb"} {
+		t.Run("roundtrip_"+id, func(t *testing.T) {
+			h := newHandler()
+			ingest(t, h, id, 0)
+			rec := do(t, h, http.MethodGet, "/manifest/"+url.PathEscape(id), "")
+			var m manifest
+			if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &m) != nil || m.AssetID != id {
+				t.Fatalf("round trip failed: %d %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestIngestAllowsTrailingWhitespace(t *testing.T) {
+	rec := do(t, newHandler(), http.MethodPost, "/ingest", segmentJSON("a", 0)+" \n\t")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status: got %d", rec.Code)
 	}
 }

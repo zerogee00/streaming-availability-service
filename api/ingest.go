@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"sas/store"
@@ -35,8 +37,16 @@ func (a *AssetAPI) Ingest(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 
 	var req ingestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
 		a.logger.Warn("ingest rejected", "reason", "decode", "error", err)
+		writeError(w, http.StatusBadRequest, "Could not decode request: JSON parsing failed")
+		return
+	}
+
+	// Require exactly one JSON value and consume the entire bounded body.
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		a.logger.Warn("ingest rejected", "reason", "trailing data", "error", err)
 		writeError(w, http.StatusBadRequest, "Could not decode request: JSON parsing failed")
 		return
 	}
@@ -45,6 +55,14 @@ func (a *AssetAPI) Ingest(w http.ResponseWriter, r *http.Request) {
 		a.logger.Warn("ingest rejected", "reason", "missing field", "field", field)
 		writeError(w, http.StatusBadRequest, "missing required field: "+field)
 		return
+	}
+
+	// Empty and dot components are rewritten by ServeMux, making IDs ambiguous.
+	for _, component := range strings.Split(req.AssetID, "/") {
+		if component == "" || component == "." || component == ".." {
+			writeError(w, http.StatusBadRequest, "invalid asset_id: path components must be non-empty and not . or ..")
+			return
+		}
 	}
 
 	seg := store.Segment{Index: *req.SegmentIndex, CDNURL: req.CDNURL}
